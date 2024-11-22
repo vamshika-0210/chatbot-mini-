@@ -26,6 +26,30 @@ class Booking(db.Model):
     
     payment = db.relationship('Payment', backref='booking', lazy=True, uselist=False)
 
+    def to_dict(self):
+        try:
+            return {
+                'id': self.booking_id,
+                'date': self.date.strftime('%Y-%m-%d') if self.date else None,
+                'nationality': self.nationality,
+                'adults': self.adults,
+                'children': self.children,
+                'ticket_type': self.ticket_type,
+                'time_slot': self.time_slot,
+                'status': self.status,
+                'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S') if self.created_at else None,
+                'updated_at': self.updated_at.strftime('%Y-%m-%d %H:%M:%S') if self.updated_at else None,
+                'total_amount': float(self.total_amount) if self.total_amount else 0.0,
+                'payment_status': self.payment_status,
+                'payment': self.payment.to_dict() if self.payment else None
+            }
+        except Exception as e:
+            print(f"Error in Booking.to_dict: {str(e)}")
+            return {
+                'id': self.booking_id,
+                'error': 'Error converting booking to dictionary'
+            }
+
 class TimeSlot(db.Model):
     __tablename__ = 'time_slots'
     
@@ -74,5 +98,5 @@ class Payment(db.Model):
             'status': self.status,
             'payment_method': self.payment_method,
             'transaction_id': self.transaction_id,
-            'created_at': self.created_at.isoformat()
+            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S')
         }

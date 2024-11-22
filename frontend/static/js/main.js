@@ -1,5 +1,6 @@
 // Add this at the top of the file
 const GATEWAY_URL = window.CONFIG.GATEWAY_URL || 'http://localhost:5001';
+const BACKEND_URL = 'http://localhost:5002';  // Updated to match the backend port
 
 // Initialize Socket.IO connection
 const socket = io();
@@ -68,7 +69,7 @@ function handleInitialOption(action) {
             showCalendar();
             break;
         case 'check_status':
-            checkBookingStatus();
+            showBookingStatus();
             break;
     }
 }
@@ -114,7 +115,13 @@ function addMessage(message, type) {
     
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    bubble.textContent = message;
+    
+    // Check if message is HTML content
+    if (typeof message === 'string' && message.trim().startsWith('<')) {
+        bubble.innerHTML = message;
+    } else {
+        bubble.textContent = message;
+    }
     
     messageDiv.appendChild(bubble);
     messagesContainer.appendChild(messageDiv);
@@ -123,16 +130,31 @@ function addMessage(message, type) {
 
 // Calendar functions
 function showCalendar() {
-    const modal = new bootstrap.Modal(document.getElementById('calendarModal'));
+    const calendarModal = document.getElementById('calendarModal');
+    
+    // Check if modal is already initialized
+    let modal = bootstrap.Modal.getInstance(calendarModal);
+    if (!modal) {
+        modal = new bootstrap.Modal(calendarModal);
+    }
     modal.show();
     
     // Create calendar UI
     const calendar = document.getElementById('calendar');
     calendar.innerHTML = ''; // Clear existing content
     
+    // Get current month and year from dataset or use current date as fallback
     const now = new Date();
-    const currentMonth = now.getMonth();
-    const currentYear = now.getFullYear();
+    const currentMonth = parseInt(calendar.dataset.currentMonth) || now.getMonth();
+    const currentYear = parseInt(calendar.dataset.currentYear) || now.getFullYear();
+    
+    // Store current month and year in dataset if not already set
+    if (!calendar.dataset.currentMonth) {
+        calendar.dataset.currentMonth = currentMonth;
+    }
+    if (!calendar.dataset.currentYear) {
+        calendar.dataset.currentYear = currentYear;
+    }
     
     // Create month selector
     const monthSelector = document.createElement('div');
@@ -179,6 +201,18 @@ function createCalendarGrid(year, month) {
                 padding: 10px;
                 border: 1px solid #dee2e6;
                 cursor: pointer;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                min-height: 70px;
+            }
+            .calendar-day .date {
+                font-size: 1.1em;
+                margin-bottom: 4px;
+            }
+            .calendar-day .slots {
+                font-size: 0.8em;
+                color: #666;
             }
             .calendar-day:hover {
                 background-color: #f8f9fa;
@@ -186,6 +220,15 @@ function createCalendarGrid(year, month) {
             .calendar-day.disabled {
                 background-color: #e9ecef;
                 cursor: not-allowed;
+            }
+            .calendar-day.available .slots {
+                color: #28a745;
+            }
+            .calendar-day.limited .slots {
+                color: #ffc107;
+            }
+            .calendar-day.full .slots {
+                color: #dc3545;
             }
         </style>
     `;
@@ -209,9 +252,17 @@ function createCalendarGrid(year, month) {
     for (let day = 1; day <= daysInMonth; day++) {
         const dayCell = document.createElement('div');
         dayCell.className = 'calendar-day';
-        dayCell.textContent = day;
+        dayCell.innerHTML = `
+            <div class="date">${day}</div>
+            <div class="slots"></div>
+        `;
         dayCell.dataset.day = day;
         dayCell.onclick = () => selectDate(year, month + 1, day);
+        dayCell.onmouseover = (e) => handleDateHover(e, `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+        dayCell.onmouseout = () => {
+            dayCell.classList.remove('show-tooltip');
+            dayCell.removeAttribute('data-tooltip');
+        };
         grid.appendChild(dayCell);
     }
     
@@ -422,7 +473,7 @@ proceedPaymentBtn.addEventListener('click', async () => {
         console.log('Sending booking data:', bookingRequest); // Debug log
         
         // Create booking first
-        const bookingResponse = await fetch(`${GATEWAY_URL}/api/bookings/create`, {
+        const bookingResponse = await fetch(`${BACKEND_URL}/api/bookings/create`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -438,7 +489,7 @@ proceedPaymentBtn.addEventListener('click', async () => {
         const bookingResult = await bookingResponse.json();
         
         // Initialize payment
-        const paymentResponse = await fetch(`${GATEWAY_URL}/api/payments/initialize`, {
+        const paymentResponse = await fetch(`${BACKEND_URL}/api/payments/initialize`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -479,7 +530,7 @@ proceedPaymentBtn.addEventListener('click', async () => {
         showInitialOptions();
         
     } catch (error) {
-        addMessage('Sorry, there was an error processing your booking: ' + error.message, 'bot error');
+        addMessage('Sorry, there was an error processing your booking: ' + error.message, 'bot');
     } finally {
         proceedPaymentBtn.disabled = false;
         proceedPaymentBtn.innerHTML = '<i class="bi bi-credit-card"></i> Proceed to Payment';
@@ -487,27 +538,162 @@ proceedPaymentBtn.addEventListener('click', async () => {
 });
 
 // Booking status checker
-async function checkBookingStatus() {
-    const bookingId = prompt('Please enter your booking ID:');
-    if (bookingId) {
+async function showBookingStatus() {
+    addMessage('Please enter your booking ID:', 'bot');
+    
+    // Create and show input form
+    const inputForm = document.createElement('form');
+    inputForm.className = 'booking-id-form';
+    inputForm.innerHTML = `
+        <div class="input-group mb-3">
+            <input type="text" class="form-control" id="bookingIdInput" placeholder="Enter Booking ID" required>
+            <button class="btn btn-primary" type="submit">Check Status</button>
+        </div>
+    `;
+    
+    inputForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const bookingId = document.getElementById('bookingIdInput').value.trim();
+        
+        if (!bookingId) {
+            addMessage('Please enter a valid booking ID.', 'bot');
+            return;
+        }
+        
         try {
-            const response = await fetch(`${GATEWAY_URL}/api/bookings/${bookingId}`);
-            const data = await response.json();
+            const response = await fetch(`${BACKEND_URL}/api/bookings/${bookingId}`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
             
-            if (data.error) {
-                addMessage(`Booking not found: ${bookingId}`, 'bot error');
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            if (data.status === 'success') {
+                displayBooking(data.data);
             } else {
-                addMessage(`
-                    Booking Status:
-                    Date: ${data.date}
-                    Status: ${data.status}
-                    Payment: ${data.payment_status}
-                `, 'bot');
+                throw new Error(data.message || 'Failed to fetch booking');
             }
         } catch (error) {
-            console.error('Error checking booking status:', error);
-            addMessage('Sorry, there was an error checking your booking status.', 'bot error');
+            console.error('Error fetching booking:', error);
+            addMessage('Sorry, we couldn\'t find a booking with that ID. Please check and try again.', 'bot');
         }
+    };
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message user';
+    messageDiv.appendChild(inputForm);
+    messagesContainer.appendChild(messageDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    
+    // Focus on the input
+    document.getElementById('bookingIdInput').focus();
+}
+
+// Display a single booking
+function displayBooking(booking) {
+    const formattedDate = new Date(booking.date).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+    });
+
+    // Create DOM elements instead of using template string
+    const resultDiv = document.createElement('div');
+    resultDiv.className = 'booking-result';
+
+    const statusDiv = document.createElement('div');
+    statusDiv.className = `booking-status-tag ${booking.status.toLowerCase()}`;
+    statusDiv.textContent = booking.status;
+    resultDiv.appendChild(statusDiv);
+
+    const infoDiv = document.createElement('div');
+    infoDiv.className = 'booking-info';
+
+    const timeDiv = document.createElement('div');
+    timeDiv.className = 'booking-time';
+    timeDiv.textContent = `${formattedDate} at ${booking.time_slot}`;
+    infoDiv.appendChild(timeDiv);
+
+    const visitorsDiv = document.createElement('div');
+    visitorsDiv.className = 'booking-visitors';
+    visitorsDiv.textContent = `${booking.adult_count + booking.child_count} Visitors`;
+    infoDiv.appendChild(visitorsDiv);
+
+    const amountDiv = document.createElement('div');
+    amountDiv.className = 'booking-amount';
+    amountDiv.textContent = `$${booking.total_amount}`;
+    infoDiv.appendChild(amountDiv);
+
+    resultDiv.appendChild(infoDiv);
+
+    const referenceDiv = document.createElement('div');
+    referenceDiv.className = 'booking-reference';
+    referenceDiv.textContent = `Reference: ${booking.id.slice(0, 8)}`;
+    resultDiv.appendChild(referenceDiv);
+
+    // Create message container
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message bot';
+    messageDiv.appendChild(resultDiv);
+    messagesContainer.appendChild(messageDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+    // Add the necessary CSS if not already present
+    if (!document.getElementById('booking-styles')) {
+        const styles = document.createElement('style');
+        styles.id = 'booking-styles';
+        styles.textContent = `
+            .booking-result {
+                background: #f8f9fa;
+                border-radius: 8px;
+                padding: 16px;
+                max-width: 400px;
+            }
+            .booking-status-tag {
+                display: inline-block;
+                padding: 4px 12px;
+                border-radius: 12px;
+                font-size: 0.9em;
+                font-weight: 500;
+                margin-bottom: 12px;
+            }
+            .booking-status-tag.confirmed {
+                background: #e3f2fd;
+                color: #1976d2;
+            }
+            .booking-status-tag.pending {
+                background: #fff3e0;
+                color: #f57c00;
+            }
+            .booking-status-tag.cancelled {
+                background: #ffebee;
+                color: #d32f2f;
+            }
+            .booking-info {
+                margin: 12px 0;
+            }
+            .booking-time {
+                font-size: 1.1em;
+                font-weight: 500;
+                margin-bottom: 8px;
+            }
+            .booking-visitors, .booking-amount {
+                color: #666;
+                font-size: 0.95em;
+                margin: 4px 0;
+            }
+            .booking-reference {
+                font-size: 0.85em;
+                color: #888;
+                margin-top: 12px;
+            }
+        `;
+        document.head.appendChild(styles);
     }
 }
 
@@ -515,7 +701,7 @@ async function checkBookingStatus() {
 async function fetchCalendarData(year, month) {
     try {
         console.log(`Fetching calendar data for ${year}/${month}`); // Debug log
-        const response = await fetch(`${GATEWAY_URL}/api/calendar/monthly/${year}/${month}`);
+        const response = await fetch(`${BACKEND_URL}/api/calendar/monthly/${year}/${month}`);
         if (!response.ok) {
             const errorData = await response.json();
             throw new Error(errorData.error || 'Failed to fetch calendar data');
@@ -547,10 +733,64 @@ function renderCalendar(data) {
         const dayCell = grid.querySelector(`.calendar-day[data-day="${day}"]`);
         if (dayCell) {
             dayCell.classList.add(info.status);
+            
+            // Calculate total available slots
+            const totalAvailable = info.slots.reduce((sum, slot) => sum + slot.available, 0);
+            
+            // Update the slots display
+            const slotsDiv = dayCell.querySelector('.slots');
+            if (slotsDiv) {
+                if (info.status === 'unavailable') {
+                    slotsDiv.textContent = 'No slots';
+                } else if (info.status === 'full') {
+                    slotsDiv.textContent = 'Full';
+                } else {
+                    slotsDiv.textContent = `${totalAvailable} slots`;
+                }
+            }
+            
+            // Keep the tooltip for detailed slot information
             const slotsInfo = info.slots.map(slot => 
                 `${slot.time}: ${slot.available} available`
             ).join('\n');
             dayCell.title = slotsInfo || 'No slots available';
         }
     });
+}
+
+// Add hover functionality to show remaining slots
+async function handleDateHover(event, date) {
+    const cell = event.target;
+    
+    try {
+        const response = await fetch(`${BACKEND_URL}/api/bookings?date=${date}`, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        if (data.status === 'success') {
+            // Create tooltip content
+            let tooltipContent = '<div class="slots-tooltip">';
+            tooltipContent += '<h4>Available Slots:</h4>';
+            
+            Object.values(data.data.slots).forEach(slot => {
+                tooltipContent += `<p>${slot.start_time} - ${slot.end_time}: ${slot.remaining}/${slot.capacity} slots</p>`;
+            });
+            
+            tooltipContent += '</div>';
+            
+            // Show tooltip
+            cell.setAttribute('data-tooltip', tooltipContent);
+            cell.classList.add('show-tooltip');
+        }
+    } catch (error) {
+        console.error('Error fetching slot information:', error);
+    }
 }

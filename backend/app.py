@@ -5,21 +5,34 @@ from datetime import datetime, timedelta
 import os
 from models import db, Booking, TimeSlot, Pricing, Payment
 from dotenv import load_dotenv
+import traceback
 
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__, 
            static_folder='../frontend/static',
-           static_url_path='/static')
-CORS(app)
+           static_url_path='/static',
+           instance_path=os.path.join(os.getcwd(), 'instance'))
+           
+# Configure CORS
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["http://127.0.0.1:5000", "http://localhost:5000"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # Configuration from environment
 BACKEND_PORT = int(os.getenv('BACKEND_PORT', 5002))
 
 # Configure Flask-SQLAlchemy
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI', 'sqlite:///museum_booking.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI', 'sqlite:///instance/chatbot.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Ensure instance folder exists
+os.makedirs('instance', exist_ok=True)
 
 # Initialize extensions
 db.init_app(app)
@@ -196,23 +209,150 @@ def get_booking(booking_id):
     try:
         booking = Booking.query.filter_by(booking_id=booking_id).first()
         if not booking:
-            return jsonify({'error': 'Booking not found'}), 404
+            return jsonify({
+                'status': 'error',
+                'message': 'Booking not found'
+            }), 404
             
         return jsonify({
-            'booking_id': booking.booking_id,
-            'date': booking.date.strftime('%Y-%m-%d'),
-            'nationality': booking.nationality,
-            'adults': booking.adults,
-            'children': booking.children,
-            'ticket_type': booking.ticket_type,
-            'time_slot': booking.time_slot,
-            'status': booking.status,
-            'total_amount': booking.total_amount,
-            'payment_status': booking.payment_status,
-            'created_at': booking.created_at.isoformat()
+            'status': 'success',
+            'data': {
+                'id': booking.booking_id,
+                'date': booking.date.strftime('%Y-%m-%d'),
+                'time_slot': booking.time_slot,
+                'adult_count': booking.adults,
+                'child_count': booking.children,
+                'total_amount': float(booking.total_amount),
+                'status': booking.status.capitalize(),
+                'payment_status': booking.payment_status
+            }
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 400
+
+@app.route('/api/bookings', methods=['GET'])
+def get_bookings():
+    try:
+        date_str = request.args.get('date')
+        if date_str:
+            # Convert string date to datetime
+            date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+            
+            # Get all time slots for the date
+            time_slots = TimeSlot.query.filter(
+                db.func.date(TimeSlot.date) == date_obj
+            ).all()
+            
+            # Get all bookings for the date - fixed field name from booking_date to date
+            bookings = Booking.query.filter(
+                db.func.date(Booking.date) == date_obj
+            ).all()
+            
+            # Calculate remaining slots for each time slot
+            slots_data = {}
+            for slot in time_slots:
+                # Fixed: Using time_slot field instead of time_slot_id
+                slot_bookings = len([b for b in bookings if b.time_slot == slot.slot_time])
+                slots_data[slot.id] = {
+                    'start_time': slot.slot_time,
+                    'end_time': (datetime.strptime(slot.slot_time, '%H:%M') + timedelta(hours=2)).strftime('%H:%M'),
+                    'capacity': slot.capacity,
+                    'remaining': slot.capacity - slot_bookings
+                }
+            
+            return jsonify({
+                'status': 'success',
+                'data': {
+                    'date': date_str,
+                    'total_bookings': len(bookings),
+                    'slots': slots_data
+                }
+            }), 200
+        else:
+            # Return all bookings if no date specified
+            bookings = Booking.query.all()
+            booking_list = []
+            for booking in bookings:
+                try:
+                    booking_dict = booking.to_dict()
+                    booking_list.append(booking_dict)
+                except Exception as e:
+                    print(f"Error converting booking {booking.id} to dict: {str(e)}")
+                    continue
+                    
+            return jsonify({
+                'status': 'success',
+                'data': booking_list
+            }), 200
+            
+    except Exception as e:
+        error_traceback = traceback.format_exc()
+        print(f"Error in get_bookings: {str(e)}")
+        print(f"Traceback: {error_traceback}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'traceback': error_traceback if app.debug else None
+        }), 500
+
+@app.route('/api/bookings', methods=['GET'])
+def get_user_bookings():
+    try:
+        # Get all bookings ordered by date
+        bookings = Booking.query.order_by(Booking.date.desc()).all()
+        
+        bookings_data = []
+        for booking in bookings:
+            try:
+                # Get associated time slot
+                time_slot = TimeSlot.query.get(booking.time_slot_id)
+                
+                # Get associated payment
+                payment = Payment.query.filter_by(booking_id=booking.id).first()
+                
+                # Get pricing info
+                pricing = Pricing.query.filter_by(
+                    nationality=booking.nationality,
+                    ticket_type=booking.ticket_type
+                ).first()
+                
+                # Calculate total amount
+                adult_total = booking.adults * (pricing.adult_price if pricing else 0)
+                child_total = booking.children * (pricing.child_price if pricing else 0)
+                total_amount = adult_total + child_total
+                
+                booking_info = {
+                    'id': booking.id,
+                    'date': booking.date.strftime('%Y-%m-%d'),
+                    'created_at': booking.created_at.strftime('%Y-%m-%d %I:%M %p'),
+                    'nationality': booking.nationality,
+                    'adults': booking.adults,
+                    'children': booking.children,
+                    'ticket_type': booking.ticket_type,
+                    'time_slot': f"{time_slot.start_time.strftime('%I:%M %p')} - {time_slot.end_time.strftime('%I:%M %p')}" if time_slot else 'N/A',
+                    'status': booking.status,
+                    'payment_status': payment.status if payment else 'Not Initiated',
+                    'payment_id': payment.payment_id if payment else None,
+                    'total_amount': f"${total_amount:.2f}",
+                    'pricing_details': {
+                        'adult_price': f"${pricing.adult_price:.2f}" if pricing else 'N/A',
+                        'child_price': f"${pricing.child_price:.2f}" if pricing else 'N/A',
+                        'adult_total': f"${adult_total:.2f}",
+                        'child_total': f"${child_total:.2f}"
+                    }
+                }
+                bookings_data.append(booking_info)
+            except Exception as e:
+                print(f"Error processing booking {booking.id}: {str(e)}")
+                continue
+        
+        return jsonify({'success': True, 'bookings': bookings_data})
+    except Exception as e:
+        print(f"Error fetching bookings: {str(e)}")
+        return jsonify({'success': False, 'error': 'Failed to fetch bookings. Please try again later.'}), 500
 
 # Payment endpoints
 @app.route('/api/payments/initialize', methods=['POST'])
