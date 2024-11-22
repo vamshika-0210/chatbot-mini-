@@ -1,0 +1,74 @@
+.calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 5px;
+    padding: 10px;
+}
+
+.calendar-header {
+    font-weight: bold;
+    text-align: center;
+    padding: 10px;
+}
+
+.calendar-day {
+    padding: 10px;
+    text-align: center;
+    border: 1px solid #dee2e6;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.calendar-day:hover {
+    background-color: #f8f9fa;
+}
+
+.calendar-day.disabled {
+    background-color: #e9ecef;
+    cursor: not-allowed;
+}
+
+.calendar-day.available {
+    background-color: #d4edda;
+    border-color: #c3e6cb;
+}
+
+.calendar-day.limited {
+    background-color: #fff3cd;
+    border-color: #ffeeba;
+}
+
+.calendar-day.full {
+    background-color: #f8d7da;
+    border-color: #f5c6cb;
+    cursor: not-allowed;
+}
+
+.calendar-day.unavailable {
+    background-color: #e9ecef;
+    border-color: #dee2e6;
+    cursor: not-allowed;
+}
+
+.month-selector {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    margin-bottom: 20px;
+}
+
+.month-selector button {
+    padding: 5px 15px;
+    border: 1px solid #007bff;
+    background: none;
+    color: #007bff;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.month-selector button:hover {
+    background-color: #007bff;
+    color: white;
+}
