@@ -6,92 +6,152 @@ import os
 from models import db, Booking, TimeSlot, Pricing, Payment
 from dotenv import load_dotenv
 import traceback
+from flask_mail import Mail, Message
+import uuid  # Added missing import for uuid
 
 # Load environment variables
 load_dotenv()
 
+# Get absolute paths
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+INSTANCE_PATH = os.path.join(BASE_DIR, 'instance')
+DB_PATH = os.path.join(INSTANCE_PATH, 'chatbot.db')
+
+# Ensure instance folder exists with proper permissions
+try:
+    os.makedirs(INSTANCE_PATH, exist_ok=True)
+    print(f"Instance directory created/verified at: {INSTANCE_PATH}")
+except Exception as e:
+    print(f"Error creating instance directory: {str(e)}")
+    raise
+
 app = Flask(__name__, 
            static_folder='../frontend/static',
            static_url_path='/static',
-           instance_path=os.path.join(os.getcwd(), 'instance'))
+           instance_path=INSTANCE_PATH)
            
-# Configure CORS
+# Configure CORS - Updated configuration
 CORS(app, resources={
-    r"/api/*": {
-        "origins": ["http://127.0.0.1:5000", "http://localhost:5000"],
+    r"/*": {
+        "origins": ["http://127.0.0.1:5000", "http://localhost:5000", "http://127.0.0.1:5001", "http://localhost:5001"],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"]
+        "allow_headers": ["Content-Type", "Authorization", "Accept"],
+        "supports_credentials": True,
+        "expose_headers": ["Content-Type", "Authorization"]
     }
 })
 
 # Configuration from environment
 BACKEND_PORT = int(os.getenv('BACKEND_PORT', 5002))
 
-# Configure Flask-SQLAlchemy
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI', 'sqlite:///instance/chatbot.db')
+# Configure Flask-SQLAlchemy with absolute path
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DB_PATH}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Ensure instance folder exists
-os.makedirs('instance', exist_ok=True)
+# Configure Mail
+app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
+app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
+app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER')
 
 # Initialize extensions
 db.init_app(app)
 jwt = JWTManager(app)
+mail = Mail(app)
 
 def init_db():
     with app.app_context():
-        db.create_all()
-        
-        # Add default pricing if Pricing table is empty
-        if not Pricing.query.first():
+        try:
+            # Create all tables
+            db.create_all()
+            print("Database tables created successfully")
+            
+            # Clear existing pricing data
+            try:
+                Pricing.query.delete()
+                db.session.commit()
+                print("Cleared existing pricing data")
+            except Exception as e:
+                print(f"Error clearing pricing data: {str(e)}")
+                db.session.rollback()
+            
+            # Add default pricing
             today = datetime.now().date()
-            future_date = today + timedelta(days=365)  # Valid for one year
+            future_date = today + timedelta(days=365)
             
             default_pricing = [
                 Pricing(
-                    nationality='all',  # Default pricing for all nationalities
-                    ticket_type='regular',
-                    adult_price=20.00,
-                    child_price=10.00,
+                    nationality='Local',
+                    ticket_type='Regular',
+                    adult_price=20.0,
+                    child_price=10.0,
+                    effective_from=today,
+                    effective_to=future_date
+                ),
+                Pricing(
+                    nationality='Foreign',
+                    ticket_type='Regular',
+                    adult_price=30.0,
+                    child_price=15.0,
                     effective_from=today,
                     effective_to=future_date
                 )
             ]
-            for price in default_pricing:
-                db.session.add(price)
-            db.session.commit()
-            print("Default pricing initialized")
-        
-        # Add test data if TimeSlot table is empty
-        if not TimeSlot.query.first():
-            # Add time slots for the next 3 months
-            current_date = datetime.now().date()
-            end_date = current_date + timedelta(days=90)
-            current = current_date
             
-            while current <= end_date:
-                # Morning slot
-                morning_slot = TimeSlot(
-                    date=current,
-                    slot_time='10:00',
-                    capacity=50,
-                    booked_count=0,
-                    ticket_type='regular'
-                )
-                # Afternoon slot
-                afternoon_slot = TimeSlot(
-                    date=current,
-                    slot_time='14:00',
-                    capacity=50,
-                    booked_count=0,
-                    ticket_type='regular'
-                )
-                db.session.add(morning_slot)
-                db.session.add(afternoon_slot)
-                current += timedelta(days=1)
+            for pricing in default_pricing:
+                try:
+                    db.session.add(pricing)
+                    db.session.commit()
+                    print(f"Added pricing for {pricing.nationality} - {pricing.ticket_type}")
+                except Exception as e:
+                    print(f"Error adding pricing: {str(e)}")
+                    db.session.rollback()
             
-            db.session.commit()
-            print("Time slots initialized")
+            # Verify pricing data
+            all_pricing = Pricing.query.all()
+            print(f"Total pricing records: {len(all_pricing)}")
+            for p in all_pricing:
+                print(f"Pricing: {p.nationality} - {p.ticket_type}: Adult=${p.adult_price}, Child=${p.child_price}")
+                
+        except Exception as e:
+            print(f"Error initializing database: {str(e)}")
+            traceback.print_exc()
+            raise
+
+def send_booking_confirmation(booking):
+    try:
+        msg = Message(
+            'Museum Visit Booking Confirmation',
+            recipients=[booking.email]
+        )
+        msg.body = f'''
+Dear Visitor,
+
+Your museum visit booking has been confirmed!
+
+Booking Details:
+---------------
+Booking ID: {booking.booking_id}
+Date: {booking.date.strftime('%Y-%m-%d')}
+Time Slot: {booking.time_slot}
+Number of Adults: {booking.adults}
+Number of Children: {booking.children}
+Total Amount: ${booking.total_amount}
+
+Please keep this email for your records. You will need to show this booking ID when you arrive at the museum.
+
+Thank you for choosing to visit our museum!
+
+Best regards,
+Museum Team
+'''
+        mail.send(msg)
+        return True
+    except Exception as e:
+        print(f"Error sending email: {str(e)}")
+        return False
 
 # Serve main HTML file
 @app.route('/')
@@ -112,6 +172,67 @@ def check_availability(date):
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
+@app.route('/api/bookings', methods=['GET'])
+def get_bookings():
+    try:
+        date_str = request.args.get('date')
+        if not date_str:
+            return jsonify({'error': 'Date parameter is required'}), 400
+            
+        try:
+            date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+            
+        # Get time slots for the date
+        slots = TimeSlot.query.filter_by(date=date_obj).all()
+        
+        # If no slots exist for this date, create them
+        if not slots:
+            morning_slot = TimeSlot(
+                date=date_obj,
+                slot_time='10:00 AM',
+                capacity=50,
+                ticket_type='Regular',
+                booked_count=0  # Explicitly set booked_count
+            )
+            afternoon_slot = TimeSlot(
+                date=date_obj,
+                slot_time='2:00 PM',
+                capacity=50,
+                ticket_type='Regular',
+                booked_count=0  # Explicitly set booked_count
+            )
+            
+            try:
+                db.session.add(morning_slot)
+                db.session.add(afternoon_slot)
+                db.session.commit()
+                print(f"Successfully created time slots for {date_obj}")  # Add debug logging
+                slots = [morning_slot, afternoon_slot]
+            except Exception as e:
+                db.session.rollback()
+                print(f"Error creating time slots: {str(e)}")
+                return jsonify({'error': 'Failed to create time slots'}), 500
+        
+        # Get bookings for the date
+        bookings = Booking.query.filter_by(date=date_obj).all()
+        
+        return jsonify({
+            'slots': [{
+                'time': slot.slot_time,
+                'available': slot.capacity - slot.booked_count,
+                'capacity': slot.capacity,
+                'booked': slot.booked_count,
+                'ticket_type': slot.ticket_type
+            } for slot in slots],
+            'bookings': [booking.to_dict() for booking in bookings]
+        })
+        
+    except Exception as e:
+        print(f"Error in get_bookings: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+
 @app.route('/api/bookings/create', methods=['POST'])
 def create_booking():
     try:
@@ -121,88 +242,129 @@ def create_booking():
             
         print("Received booking data:", data)  # Debug log
             
-        required_fields = ['date', 'nationality', 'adults', 'children', 'ticketType', 'timeSlot']
-        missing_fields = [field for field in required_fields if field not in data]
+        required_fields = ['date', 'nationality', 'adults', 'children', 'ticketType', 'timeSlot', 'email']
+        missing_fields = [field for field in required_fields if field not in data or not data[field]]
         
         if missing_fields:
-            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+            return jsonify({'error': f'Missing or empty required fields: {", ".join(missing_fields)}'}), 400
             
-        booking_date = datetime.strptime(data['date'], '%Y-%m-%d').date()
+        try:
+            booking_date = datetime.strptime(data['date'], '%Y-%m-%d').date()
+        except ValueError as e:
+            print(f"Date parsing error: {str(e)}")
+            return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+            
         print("Booking date:", booking_date)  # Debug log
         
-        # Check if the time slot exists and has capacity
-        time_slot = TimeSlot.query.filter_by(
-            date=booking_date,
-            slot_time=data['timeSlot']
-        ).first()
+        # Validate visitor numbers
+        try:
+            adults = int(data['adults'])
+            children = int(data['children'])
+            if adults < 1:
+                return jsonify({'error': 'At least one adult is required'}), 400
+            if children < 0:
+                return jsonify({'error': 'Number of children cannot be negative'}), 400
+        except ValueError as e:
+            print(f"Visitor number parsing error: {str(e)}")
+            return jsonify({'error': 'Invalid visitor numbers'}), 400
         
-        if not time_slot:
-            return jsonify({'error': 'Time slot not available'}), 400
-        
-        # Check capacity
-        total_visitors = int(data['adults']) + int(data['children'])
-        if time_slot.booked_count + total_visitors > time_slot.capacity:
-            return jsonify({'error': 'Not enough capacity available'}), 400
-        
-        # Get pricing
-        pricing_query = Pricing.query.filter(
-            (Pricing.nationality == data['nationality']) | (Pricing.nationality == 'all'),
-            Pricing.ticket_type == data['ticketType'],
-            Pricing.effective_from <= booking_date,
-            Pricing.effective_to >= booking_date
-        )
-        
-        # Debug logs
-        print("Looking for pricing with:")
-        print(f"Nationality: {data['nationality']} or 'all'")
-        print(f"Ticket type: {data['ticketType']}")
-        print(f"Date range: {booking_date}")
-        
-        pricing = pricing_query.first()
-        
-        if not pricing:
-            # Check what pricing entries exist
-            all_pricing = Pricing.query.all()
-            print("Available pricing entries:", [
-                {
-                    'nationality': p.nationality,
-                    'ticket_type': p.ticket_type,
-                    'effective_from': p.effective_from,
-                    'effective_to': p.effective_to
-                } for p in all_pricing
-            ])
-            return jsonify({'error': 'Pricing not found for the specified date and nationality'}), 400
-        
+        # Get pricing information
+        try:
+            pricing = Pricing.query.filter_by(
+                nationality=data['nationality'],
+                ticket_type=data['ticketType']
+            ).filter(
+                Pricing.effective_from <= booking_date,
+                Pricing.effective_to >= booking_date
+            ).first()
+            
+            if not pricing:
+                print(f"No pricing found for nationality: {data['nationality']}, ticket type: {data['ticketType']}")
+                return jsonify({'error': 'No valid pricing found for the selected options'}), 400
+                
+            print(f"Found pricing: adult=${pricing.adult_price}, child=${pricing.child_price}")
+        except Exception as e:
+            print(f"Error querying pricing: {str(e)}")
+            traceback.print_exc()
+            return jsonify({'error': 'Error retrieving pricing information'}), 500
+            
         # Calculate total amount
-        total_amount = (int(data['adults']) * pricing.adult_price) + (int(data['children']) * pricing.child_price)
+        total_amount = (adults * pricing.adult_price) + (children * pricing.child_price)
+        print(f"Calculated total amount: ${total_amount}")
         
-        # Create the booking
-        booking = Booking(
-            date=booking_date,
-            nationality=data['nationality'],
-            adults=data['adults'],
-            children=data['children'],
-            ticket_type=data['ticketType'],
-            time_slot=data['timeSlot'],
-            total_amount=total_amount,
-            status='pending'
-        )
+        # Check if the time slot exists and has capacity
+        try:
+            time_slot = TimeSlot.query.filter_by(
+                date=booking_date,
+                slot_time=data['timeSlot'],
+                ticket_type=data['ticketType']
+            ).first()
+            
+            if not time_slot:
+                print(f"Creating new time slot for {booking_date} at {data['timeSlot']}")
+                time_slot = TimeSlot(
+                    date=booking_date,
+                    slot_time=data['timeSlot'],
+                    capacity=50,
+                    ticket_type=data['ticketType'],
+                    booked_count=0
+                )
+                db.session.add(time_slot)
+                db.session.commit()
+                print("Successfully created new time slot")
+                
+            # Check capacity
+            total_visitors = adults + children
+            if time_slot.booked_count + total_visitors > time_slot.capacity:
+                return jsonify({'error': 'Not enough capacity available'}), 400
+                
+            print(f"Time slot capacity check passed. Current bookings: {time_slot.booked_count}, New visitors: {total_visitors}")
+        except Exception as e:
+            db.session.rollback()
+            print(f"Error handling time slot: {str(e)}")
+            traceback.print_exc()
+            return jsonify({'error': 'Error managing time slot'}), 500
         
-        # Update time slot capacity
-        time_slot.booked_count += total_visitors
-        
-        db.session.add(booking)
-        db.session.commit()
-        
-        return jsonify({
-            'booking_id': booking.booking_id,
-            'total_amount': total_amount,
-            'status': 'success'
-        })
-        
+        # Create the booking with pending status
+        try:
+            booking = Booking(
+                date=booking_date,
+                email=data['email'],
+                nationality=data['nationality'],
+                adults=adults,
+                children=children,
+                ticket_type=data['ticketType'],
+                time_slot=data['timeSlot'],
+                total_amount=float(total_amount),
+                status='pending',
+                payment_status='pending'
+            )
+            
+            # Update the time slot's booked count
+            time_slot.booked_count += total_visitors
+            
+            db.session.add(booking)
+            db.session.commit()
+            print(f"Successfully created booking with ID: {booking.booking_id}")
+            print(f"Updated time slot booked count to: {time_slot.booked_count}")
+            
+            return jsonify({
+                'success': True,
+                'booking_id': booking.booking_id,
+                'amount': total_amount
+            })
+            
+        except Exception as e:
+            db.session.rollback()
+            print(f"Error saving booking: {str(e)}")
+            print(f"Full error traceback:")
+            traceback.print_exc()
+            return jsonify({'error': 'Failed to save booking. Please try again.'}), 500
+            
     except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 400
+        print(f"Unexpected error in create_booking: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
 
 @app.route('/api/bookings/<booking_id>', methods=['GET'])
 def get_booking(booking_id):
@@ -232,71 +394,6 @@ def get_booking(booking_id):
             'status': 'error',
             'message': str(e)
         }), 400
-
-@app.route('/api/bookings', methods=['GET'])
-def get_bookings():
-    try:
-        date_str = request.args.get('date')
-        if date_str:
-            # Convert string date to datetime
-            date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
-            
-            # Get all time slots for the date
-            time_slots = TimeSlot.query.filter(
-                db.func.date(TimeSlot.date) == date_obj
-            ).all()
-            
-            # Get all bookings for the date - fixed field name from booking_date to date
-            bookings = Booking.query.filter(
-                db.func.date(Booking.date) == date_obj
-            ).all()
-            
-            # Calculate remaining slots for each time slot
-            slots_data = {}
-            for slot in time_slots:
-                # Fixed: Using time_slot field instead of time_slot_id
-                slot_bookings = len([b for b in bookings if b.time_slot == slot.slot_time])
-                slots_data[slot.id] = {
-                    'start_time': slot.slot_time,
-                    'end_time': (datetime.strptime(slot.slot_time, '%H:%M') + timedelta(hours=2)).strftime('%H:%M'),
-                    'capacity': slot.capacity,
-                    'remaining': slot.capacity - slot_bookings
-                }
-            
-            return jsonify({
-                'status': 'success',
-                'data': {
-                    'date': date_str,
-                    'total_bookings': len(bookings),
-                    'slots': slots_data
-                }
-            }), 200
-        else:
-            # Return all bookings if no date specified
-            bookings = Booking.query.all()
-            booking_list = []
-            for booking in bookings:
-                try:
-                    booking_dict = booking.to_dict()
-                    booking_list.append(booking_dict)
-                except Exception as e:
-                    print(f"Error converting booking {booking.id} to dict: {str(e)}")
-                    continue
-                    
-            return jsonify({
-                'status': 'success',
-                'data': booking_list
-            }), 200
-            
-    except Exception as e:
-        error_traceback = traceback.format_exc()
-        print(f"Error in get_bookings: {str(e)}")
-        print(f"Traceback: {error_traceback}")
-        return jsonify({
-            'status': 'error',
-            'message': str(e),
-            'traceback': error_traceback if app.debug else None
-        }), 500
 
 @app.route('/api/bookings', methods=['GET'])
 def get_user_bookings():
@@ -354,11 +451,78 @@ def get_user_bookings():
         print(f"Error fetching bookings: {str(e)}")
         return jsonify({'success': False, 'error': 'Failed to fetch bookings. Please try again later.'}), 500
 
+@app.route('/api/bookings', methods=['GET'])
+def get_bookings_by_date():
+    try:
+        date_str = request.args.get('date')
+        if not date_str:
+            return jsonify({'error': 'Date parameter is required'}), 400
+
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+        
+        # Initialize slots for this date if they don't exist
+        existing_slots = TimeSlot.query.filter_by(date=date_obj).all()
+        if not existing_slots:
+            morning_slot = TimeSlot(
+                date=date_obj,
+                slot_time='10:00 AM',
+                capacity=50,
+                ticket_type='Regular',
+                booked_count=0  # Explicitly set booked_count
+            )
+            afternoon_slot = TimeSlot(
+                date=date_obj,
+                slot_time='2:00 PM',
+                capacity=50,
+                ticket_type='Regular',
+                booked_count=0  # Explicitly set booked_count
+            )
+            
+            db.session.add(morning_slot)
+            db.session.add(afternoon_slot)
+            try:
+                db.session.commit()
+                existing_slots = [morning_slot, afternoon_slot]
+            except Exception as e:
+                db.session.rollback()
+                print(f"Error creating slots: {str(e)}")
+                return jsonify({'error': 'Failed to create time slots'}), 500
+        
+        slots_info = []
+        for slot in existing_slots:
+            available = slot.capacity - slot.booked_count
+            slots_info.append({
+                'time': slot.slot_time,
+                'available': available,
+                'total': slot.capacity,
+                'booked': slot.booked_count,
+                'ticket_type': slot.ticket_type
+            })
+        
+        return jsonify({
+            'date': date_str,
+            'slots': slots_info
+        })
+        
+    except ValueError as e:
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+    except Exception as e:
+        print(f"Error getting bookings for date: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+
 # Payment endpoints
 @app.route('/api/payments/initialize', methods=['POST'])
 def initialize_payment():
     try:
         data = request.json
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+            
+        required_fields = ['booking_id', 'amount', 'payment_method']
+        missing_fields = [field for field in required_fields if field not in data]
+        if missing_fields:
+            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+            
         booking = Booking.query.filter_by(booking_id=data['booking_id']).first()
         
         if not booking:
@@ -372,23 +536,62 @@ def initialize_payment():
             booking_id=booking.booking_id,
             amount=data['amount'],
             payment_method=data['payment_method'],
-            status='pending'
+            status='pending',
+            transaction_id=str(uuid.uuid4())  # Generate a unique transaction ID
         )
         
-        db.session.add(payment)
-        db.session.commit()
-        
-        # For demo purposes, automatically mark payment as completed
-        payment.status = 'completed'
-        booking.payment_status = 'completed'
-        booking.status = 'confirmed'
-        db.session.commit()
-        
-        return jsonify(payment.to_dict())
-        
+        try:
+            # Start a transaction
+            db.session.begin_nested()
+            
+            db.session.add(payment)
+            
+            # For demo purposes, automatically mark payment as completed
+            payment.status = 'completed'
+            booking.payment_status = 'completed'
+            booking.status = 'confirmed'
+            
+            # Update time slot capacity
+            time_slot = TimeSlot.query.filter_by(
+                date=booking.date,
+                slot_time=booking.time_slot,
+                ticket_type=booking.ticket_type
+            ).first()
+            
+            if not time_slot:
+                db.session.rollback()
+                return jsonify({'error': 'Time slot not found'}), 404
+                
+            if time_slot.booked_count + booking.adults + booking.children > time_slot.capacity:
+                db.session.rollback()
+                return jsonify({'error': 'Not enough capacity available'}), 400
+                
+            time_slot.booked_count += booking.adults + booking.children
+            
+            # Commit the transaction
+            db.session.commit()
+            
+            # Only send confirmation email after successful payment and database updates
+            email_sent = send_booking_confirmation(booking)
+            if not email_sent:
+                print("Warning: Failed to send confirmation email")
+                # Don't fail the payment if email fails, but log it
+            
+            return jsonify({
+                'success': True,
+                'payment_id': payment.id,
+                'status': payment.status,
+                'transaction_id': payment.transaction_id
+            })
+            
+        except Exception as e:
+            db.session.rollback()
+            print(f"Error processing payment: {str(e)}")
+            return jsonify({'error': 'Failed to process payment'}), 500
+            
     except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 400
+        print(f"Error in initialize_payment: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/payments/<payment_id>/status', methods=['GET'])
 def get_payment_status(payment_id):
@@ -461,14 +664,6 @@ def get_calendar_data(year, month):
     except Exception as e:
         print(f"Backend: Error processing calendar request - {str(e)}")  # Debug log
         return jsonify({'error': str(e)}), 400
-
-# Add CORS headers here too
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
 
 if __name__ == '__main__':
     init_db()

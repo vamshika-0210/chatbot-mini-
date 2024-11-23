@@ -22,7 +22,8 @@ let currentBooking = {
     children: 0,
     ticketType: null,
     timeSlot: null,
-    amount: 0
+    amount: 0,
+    email: null
 };
 
 // Connect to WebSocket
@@ -128,11 +129,15 @@ function addMessage(message, type) {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
+// Initialize calendar variables
+let currentMonth = new Date().getMonth();
+let currentYear = new Date().getFullYear();
+
 // Calendar functions
 function showCalendar() {
     const calendarModal = document.getElementById('calendarModal');
     
-    // Check if modal is already initialized
+    // Initialize modal if not already done
     let modal = bootstrap.Modal.getInstance(calendarModal);
     if (!modal) {
         modal = new bootstrap.Modal(calendarModal);
@@ -141,35 +146,35 @@ function showCalendar() {
     
     // Create calendar UI
     const calendar = document.getElementById('calendar');
-    calendar.innerHTML = ''; // Clear existing content
-    
-    // Get current month and year from dataset or use current date as fallback
-    const now = new Date();
-    const currentMonth = parseInt(calendar.dataset.currentMonth) || now.getMonth();
-    const currentYear = parseInt(calendar.dataset.currentYear) || now.getFullYear();
-    
-    // Store current month and year in dataset if not already set
-    if (!calendar.dataset.currentMonth) {
-        calendar.dataset.currentMonth = currentMonth;
-    }
-    if (!calendar.dataset.currentYear) {
-        calendar.dataset.currentYear = currentYear;
-    }
+    calendar.innerHTML = '';
     
     // Create month selector
     const monthSelector = document.createElement('div');
-    monthSelector.className = 'month-selector mb-3';
+    monthSelector.className = 'month-selector d-flex justify-content-between align-items-center mb-3';
     monthSelector.innerHTML = `
-        <div class="d-flex justify-content-between align-items-center">
-            <button class="btn btn-outline-primary" onclick="changeMonth(-1)">Previous</button>
-            <h4>${getMonthName(currentMonth)} ${currentYear}</h4>
-            <button class="btn btn-outline-primary" onclick="changeMonth(1)">Next</button>
-        </div>
+        <button class="btn btn-outline-primary" onclick="changeMonth(-1)">&lt; Prev</button>
+        <h4>${getMonthName(currentMonth)} ${currentYear}</h4>
+        <button class="btn btn-outline-primary" onclick="changeMonth(1)">Next &gt;</button>
     `;
     calendar.appendChild(monthSelector);
     
     // Create calendar grid
-    createCalendarGrid(currentYear, currentMonth);
+    const gridHtml = createCalendarGrid(currentYear, currentMonth);
+    calendar.insertAdjacentHTML('beforeend', gridHtml);
+    
+    // Add click event listeners to all date cells
+    calendar.querySelectorAll('td[data-date]').forEach(cell => {
+        if (!cell.classList.contains('disabled')) {
+            cell.addEventListener('click', () => {
+                const dateStr = cell.getAttribute('data-date');
+                if (dateStr) {
+                    selectDate(dateStr);
+                }
+            });
+        }
+    });
+    
+    // Fetch and update availability data
     fetchCalendarData(currentYear, currentMonth + 1);
 }
 
@@ -180,136 +185,108 @@ function getMonthName(month) {
 }
 
 function createCalendarGrid(year, month) {
-    const calendar = document.getElementById('calendar');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
     const firstDay = new Date(year, month, 1);
     const lastDay = new Date(year, month + 1, 0);
-    const daysInMonth = lastDay.getDate();
+    const startingDay = firstDay.getDay();
+    const monthLength = lastDay.getDate();
     
-    // Create weekday headers
-    const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const grid = document.createElement('div');
-    grid.className = 'calendar-grid';
-    grid.innerHTML = `
-        <style>
-            .calendar-grid {
-                display: grid;
-                grid-template-columns: repeat(7, 1fr);
-                gap: 5px;
-                text-align: center;
-            }
-            .calendar-day {
-                padding: 10px;
-                border: 1px solid #dee2e6;
-                cursor: pointer;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                min-height: 70px;
-            }
-            .calendar-day .date {
-                font-size: 1.1em;
-                margin-bottom: 4px;
-            }
-            .calendar-day .slots {
-                font-size: 0.8em;
-                color: #666;
-            }
-            .calendar-day:hover {
-                background-color: #f8f9fa;
-            }
-            .calendar-day.disabled {
-                background-color: #e9ecef;
-                cursor: not-allowed;
-            }
-            .calendar-day.available .slots {
-                color: #28a745;
-            }
-            .calendar-day.limited .slots {
-                color: #ffc107;
-            }
-            .calendar-day.full .slots {
-                color: #dc3545;
-            }
-        </style>
-    `;
-    
-    // Add weekday headers
-    weekdays.forEach(day => {
-        const dayHeader = document.createElement('div');
-        dayHeader.className = 'calendar-header fw-bold';
-        dayHeader.textContent = day;
-        grid.appendChild(dayHeader);
+    let html = '<table class="calendar table table-bordered">';
+    html += '<thead><tr>';
+    ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach(day => {
+        html += `<th>${day}</th>`;
     });
+    html += '</tr></thead><tbody>';
     
-    // Add empty cells for days before the first day of the month
-    for (let i = 0; i < firstDay.getDay(); i++) {
-        const emptyDay = document.createElement('div');
-        emptyDay.className = 'calendar-day disabled';
-        grid.appendChild(emptyDay);
+    let day = 1;
+    for (let i = 0; i < 6; i++) {
+        html += '<tr>';
+        for (let j = 0; j < 7; j++) {
+            if (i === 0 && j < startingDay) {
+                html += '<td></td>';
+            } else if (day > monthLength) {
+                html += '<td></td>';
+            } else {
+                const currentDate = new Date(year, month, day);
+                const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                
+                let classes = [];
+                
+                // Check if date is in the past
+                if (currentDate < today) {
+                    classes.push('past disabled');
+                } else if (currentDate.getTime() === today.getTime()) {
+                    classes.push('today');
+                } else {
+                    classes.push('future');
+                }
+                
+                html += `<td class="${classes.join(' ')}" data-date="${dateStr}">${day}</td>`;
+                day++;
+            }
+        }
+        html += '</tr>';
+        if (day > monthLength) {
+            break;
+        }
     }
-    
-    // Add days of the month
-    for (let day = 1; day <= daysInMonth; day++) {
-        const dayCell = document.createElement('div');
-        dayCell.className = 'calendar-day';
-        dayCell.innerHTML = `
-            <div class="date">${day}</div>
-            <div class="slots"></div>
-        `;
-        dayCell.dataset.day = day;
-        dayCell.onclick = () => selectDate(year, month + 1, day);
-        dayCell.onmouseover = (e) => handleDateHover(e, `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
-        dayCell.onmouseout = () => {
-            dayCell.classList.remove('show-tooltip');
-            dayCell.removeAttribute('data-tooltip');
-        };
-        grid.appendChild(dayCell);
-    }
-    
-    calendar.appendChild(grid);
+    html += '</tbody></table>';
+    return html;
 }
 
-function selectDate(year, month, day) {
-    const dateStr = `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+function selectDate(dateStr) {
+    if (!dateStr) return;
+    
     currentBooking.date = dateStr;
     
+    // Update UI to show selected date
+    document.querySelectorAll('.calendar td').forEach(cell => {
+        cell.classList.remove('selected');
+    });
+    
+    const selectedCell = document.querySelector(`td[data-date="${dateStr}"]`);
+    if (selectedCell) {
+        selectedCell.classList.add('selected');
+    }
+    
+    // Close calendar modal and proceed with booking
     const modal = bootstrap.Modal.getInstance(document.getElementById('calendarModal'));
     if (modal) {
         modal.hide();
-        setTimeout(() => {
-            addMessage(`You selected: ${dateStr}`, 'user');
-            addMessage('Please select the number of visitors:', 'bot');
-            showVisitorInputs();
-        }, 300);
     }
+    
+    // Display selected date in chat
+    const formattedDate = new Date(dateStr).toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+    });
+    addMessage(`You selected: ${formattedDate}`, 'user');
+    
+    // Show nationality options
+    showNationalityOptions();
 }
 
 function changeMonth(delta) {
-    const calendar = document.getElementById('calendar');
-    const currentMonth = parseInt(calendar.dataset.currentMonth) || new Date().getMonth();
-    const currentYear = parseInt(calendar.dataset.currentYear) || new Date().getFullYear();
+    currentMonth += delta;
     
-    let newMonth = currentMonth + delta;
-    let newYear = currentYear;
-    
-    if (newMonth > 11) {
-        newMonth = 0;
-        newYear++;
-    } else if (newMonth < 0) {
-        newMonth = 11;
-        newYear--;
+    if (currentMonth > 11) {
+        currentMonth = 0;
+        currentYear++;
+    } else if (currentMonth < 0) {
+        currentMonth = 11;
+        currentYear--;
     }
     
-    calendar.dataset.currentMonth = newMonth;
-    calendar.dataset.currentYear = newYear;
-    
-    calendar.innerHTML = '';
     showCalendar();
 }
 
 // Booking functions
 function showNationalityOptions() {
-    const options = ['Local', 'Foreign'];
+    const options = ['Local', 'Foreign', 'International'];  // Updated to match backend
     const quickReplies = document.createElement('div');
     quickReplies.className = 'quick-replies';
     
@@ -362,6 +339,11 @@ function submitVisitors() {
     const adults = document.getElementById('adults-input').value;
     const children = document.getElementById('children-input').value;
     
+    if (!adults || parseInt(adults) < 1) {
+        addMessage('Please enter at least 1 adult', 'bot');
+        return;
+    }
+    
     currentBooking.adults = parseInt(adults);
     currentBooking.children = parseInt(children);
     
@@ -372,19 +354,27 @@ function submitVisitors() {
     }
     
     addMessage(`Selected visitors: ${adults} adults, ${children} children`, 'user');
-    addMessage('Great! Now please select your nationality:', 'bot');
-    showNationalityOptions();
+    addMessage('Please enter your email address for booking confirmation:', 'bot');
+    
+    const emailInput = document.createElement('div');
+    emailInput.className = 'email-input-container';
+    emailInput.innerHTML = `
+        <input type="email" id="visitor-email" class="form-control" placeholder="Enter your email">
+        <button onclick="submitEmail()" class="btn btn-primary mt-2">Submit</button>
+    `;
+    messagesContainer.appendChild(emailInput);
+    document.getElementById('visitor-email').focus();
 }
 
 function showTicketTypes() {
-    const ticketTypes = ['regular'];  // Simplified to match our database
+    const ticketTypes = ['Regular'];  // Updated to match backend
     const quickReplies = document.createElement('div');
     quickReplies.className = 'quick-replies';
     
     ticketTypes.forEach(type => {
         const button = document.createElement('button');
         button.className = 'quick-reply-btn';
-        button.innerHTML = `<i class="bi bi-ticket-perforated"></i> ${type.charAt(0).toUpperCase() + type.slice(1)}`;
+        button.innerHTML = `<i class="bi bi-ticket-perforated"></i> ${type}`;
         button.onclick = () => selectTicketType(type);
         quickReplies.appendChild(button);
     });
@@ -408,7 +398,7 @@ function selectTicketType(ticketType) {
 }
 
 function showTimeSlots() {
-    const timeSlots = ['10:00', '14:00'];  // Match the database time slots
+    const timeSlots = ['10:00 AM', '2:00 PM'];  // Updated to match backend
     const quickReplies = document.createElement('div');
     quickReplies.className = 'quick-replies';
     
@@ -434,10 +424,30 @@ function selectTimeSlot(timeSlot) {
     }
     
     addMessage(`Selected time slot: ${timeSlot}`, 'user');
+    addMessage('Please enter the number of visitors:', 'bot');
+    showVisitorInputs();
+}
+
+function submitEmail() {
+    const emailInput = document.getElementById('visitor-email');
+    const email = emailInput.value.trim();
+    
+    if (!email || !email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
+        addMessage('Please enter a valid email address.', 'bot');
+        return;
+    }
+    
+    currentBooking.email = email;
+    addMessage(`Email: ${email}`, 'user');
+    emailInput.parentElement.remove();
+    
+    // Show booking summary and payment options
     currentBooking.amount = (currentBooking.adults * 20) + (currentBooking.children * 10);
     
     addMessage('Great! Here\'s your booking summary:', 'bot');
     updateBookingSummary();
+    addMessage('Great! Please review your booking details and proceed to payment.', 'bot');
+    paymentSection.classList.remove('d-none');
 }
 
 function updateBookingSummary() {
@@ -458,58 +468,75 @@ function updateBookingSummary() {
 proceedPaymentBtn.addEventListener('click', async () => {
     try {
         proceedPaymentBtn.disabled = true;
-        proceedPaymentBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
+        addMessage('Processing your booking...', 'bot');
+
+        // Validate booking data
+        const requiredFields = ['date', 'nationality', 'adults', 'children', 'ticketType', 'timeSlot', 'email'];
+        const missingFields = requiredFields.filter(field => !currentBooking[field]);
         
-        // Format the booking data correctly
-        const bookingRequest = {
+        if (missingFields.length > 0) {
+            throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
+        }
+
+        // Create booking
+        const bookingData = {
             date: currentBooking.date,
             nationality: currentBooking.nationality,
             adults: parseInt(currentBooking.adults),
             children: parseInt(currentBooking.children),
             ticketType: currentBooking.ticketType,
-            timeSlot: currentBooking.timeSlot
+            timeSlot: currentBooking.timeSlot,
+            email: currentBooking.email
         };
-        
-        console.log('Sending booking data:', bookingRequest); // Debug log
-        
-        // Create booking first
-        const bookingResponse = await fetch(`${BACKEND_URL}/api/bookings/create`, {
+
+        console.log('Sending booking data:', bookingData);  // Debug log
+
+        const response = await fetch(`${BACKEND_URL}/api/bookings/create`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
             },
-            body: JSON.stringify(bookingRequest)
+            credentials: 'include',
+            body: JSON.stringify(bookingData)
         });
         
-        if (!bookingResponse.ok) {
-            const errorData = await bookingResponse.json();
+        if (!response.ok) {
+            const errorData = await response.json();
             throw new Error(errorData.error || 'Failed to create booking');
         }
         
-        const bookingResult = await bookingResponse.json();
+        const data = await response.json();
         
+        if (!data.booking_id) {
+            throw new Error('Invalid booking response');
+        }
+
         // Initialize payment
         const paymentResponse = await fetch(`${BACKEND_URL}/api/payments/initialize`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
             },
+            credentials: 'include',
             body: JSON.stringify({
-                booking_id: bookingResult.booking_id,
-                amount: currentBooking.amount,
-                payment_method: 'card'
+                booking_id: data.booking_id,
+                amount: data.amount,
+                payment_method: 'card'  // Added default payment method
             })
         });
-        
+
         if (!paymentResponse.ok) {
-            throw new Error('Failed to initialize payment');
+            const errorData = await paymentResponse.json();
+            throw new Error(errorData.error || 'Failed to initialize payment');
         }
         
         const paymentData = await paymentResponse.json();
         
         // For demo, simulate successful payment
-        addMessage('Payment processed successfully! 🎉', 'bot');
-        addMessage(`Your booking is confirmed. Booking ID: ${bookingResult.booking_id}`, 'bot');
+        addMessage('Payment processed successfully! ', 'bot');
+        addMessage(`Your booking is confirmed. Booking ID: ${data.booking_id}`, 'bot');
         
         // Clear the current booking
         currentBooking = {
@@ -519,7 +546,8 @@ proceedPaymentBtn.addEventListener('click', async () => {
             children: 0,
             ticketType: null,
             timeSlot: null,
-            amount: 0
+            amount: 0,
+            email: null
         };
         
         // Hide booking summary and payment section
@@ -533,7 +561,6 @@ proceedPaymentBtn.addEventListener('click', async () => {
         addMessage('Sorry, there was an error processing your booking: ' + error.message, 'bot');
     } finally {
         proceedPaymentBtn.disabled = false;
-        proceedPaymentBtn.innerHTML = '<i class="bi bi-credit-card"></i> Proceed to Payment';
     }
 });
 
@@ -569,15 +596,17 @@ async function showBookingStatus() {
             });
             
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                const errorData = await response.json();
+                throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
             }
             
             const data = await response.json();
-            if (data.status === 'success') {
-                displayBooking(data.data);
-            } else {
+            
+            if (!data.status === 'success') {
                 throw new Error(data.message || 'Failed to fetch booking');
             }
+            
+            displayBooking(data.data);
         } catch (error) {
             console.error('Error fetching booking:', error);
             addMessage('Sorry, we couldn\'t find a booking with that ID. Please check and try again.', 'bot');
@@ -760,37 +789,98 @@ function renderCalendar(data) {
 
 // Add hover functionality to show remaining slots
 async function handleDateHover(event, date) {
-    const cell = event.target;
-    
     try {
         const response = await fetch(`${BACKEND_URL}/api/bookings?date=${date}`, {
             method: 'GET',
             headers: {
-                'Content-Type': 'application/json'
-            }
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            credentials: 'include'
         });
         
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            const errorData = await response.json();
+            throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
         }
         
         const data = await response.json();
-        if (data.status === 'success') {
-            // Create tooltip content
-            let tooltipContent = '<div class="slots-tooltip">';
-            tooltipContent += '<h4>Available Slots:</h4>';
-            
-            Object.values(data.data.slots).forEach(slot => {
-                tooltipContent += `<p>${slot.start_time} - ${slot.end_time}: ${slot.remaining}/${slot.capacity} slots</p>`;
-            });
-            
-            tooltipContent += '</div>';
-            
-            // Show tooltip
-            cell.setAttribute('data-tooltip', tooltipContent);
-            cell.classList.add('show-tooltip');
+        
+        if (!data.slots || !Array.isArray(data.slots)) {
+            throw new Error('Invalid response format');
+        }
+        
+        // Create tooltip content
+        const tooltipContent = data.slots.map(slot => 
+            `${slot.time}: ${slot.available} available (${slot.ticket_type})`
+        ).join('\n');
+        
+        // Update the tooltip
+        event.target.title = tooltipContent || 'No slots available';
+        
+        // Update slot count display
+        const slotsDiv = event.target.querySelector('.slots');
+        if (slotsDiv) {
+            const totalAvailable = data.slots.reduce((sum, slot) => sum + slot.available, 0);
+            if (totalAvailable === 0) {
+                slotsDiv.textContent = 'Full';
+                event.target.classList.remove('available', 'limited');
+                event.target.classList.add('full');
+            } else if (totalAvailable < 5) {
+                slotsDiv.textContent = `${totalAvailable} slots`;
+                event.target.classList.remove('available', 'full');
+                event.target.classList.add('limited');
+            } else {
+                slotsDiv.textContent = `${totalAvailable} slots`;
+                event.target.classList.remove('limited', 'full');
+                event.target.classList.add('available');
+            }
         }
     } catch (error) {
         console.error('Error fetching slot information:', error);
+        event.target.title = 'Error loading slot information';
     }
+}
+
+async function createBooking(bookingData) {
+    try {
+        console.log('Sending booking data:', bookingData);
+        
+        const response = await fetch(`${BACKEND_URL}/api/bookings/create`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            credentials: 'include',
+            body: JSON.stringify(bookingData)
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to create booking');
+        }
+
+        const data = await response.json();
+        
+        if (!data.booking_id) {
+            throw new Error('Invalid booking response');
+        }
+
+        // Show success message
+        addMessage('Booking successful! Check your email for confirmation.', 'bot');
+        return data;
+    } catch (error) {
+        console.error('Error creating booking:', error);
+        addMessage(`Sorry, there was an error processing your booking: ${error.message}`, 'bot');
+        throw error;
+    }
+}
+
+function showError(message) {
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'error-message';
+    errorDiv.textContent = message;
+    messagesContainer.appendChild(errorDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }

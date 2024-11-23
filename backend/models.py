@@ -12,6 +12,7 @@ class Booking(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     booking_id = db.Column(db.String(50), unique=True, nullable=False, default=generate_booking_id)
+    email = db.Column(db.String(120), nullable=False)
     date = db.Column(db.Date, nullable=False)
     nationality = db.Column(db.String(50), nullable=False)
     adults = db.Column(db.Integer, nullable=False)
@@ -30,6 +31,7 @@ class Booking(db.Model):
         try:
             return {
                 'id': self.booking_id,
+                'email': self.email,
                 'date': self.date.strftime('%Y-%m-%d') if self.date else None,
                 'nationality': self.nationality,
                 'adults': self.adults,
