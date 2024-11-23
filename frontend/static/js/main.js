@@ -266,7 +266,7 @@ function selectDate(dateStr) {
     });
     addMessage(`You selected: ${formattedDate}`, 'user');
     
-    // Show nationality options
+    addMessage('Are you a local or international visitor?', 'bot');
     showNationalityOptions();
 }
 
@@ -286,7 +286,7 @@ function changeMonth(delta) {
 
 // Booking functions
 function showNationalityOptions() {
-    const options = ['Local', 'Foreign', 'International'];  // Updated to match backend
+    const options = ['Local', 'Foreign'];  // Updated to match backend
     const quickReplies = document.createElement('div');
     quickReplies.className = 'quick-replies';
     
